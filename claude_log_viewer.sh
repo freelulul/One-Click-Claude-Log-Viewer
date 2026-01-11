@@ -2,50 +2,67 @@
 # ==============================================================================
 # One-Click Claude Log Viewer & Server
 #
-# Workflow:
-# 1. Clean:     Recursively deletes all old .html log files to ensure a fresh start.
-# 2. Generate:  Invokes the claude-code-log tool to regenerate all project reports.
-# 3. View:      Starts a local web server to browse the newly generated reports.
+# Features:
+# - Auto-regenerates HTML when source log files change
+# - Session selector UI - view individual sessions instead of all at once
+# - Real-time update detection
+#
+# Usage:
+#   ./claude_log_viewer.sh           # Run enhanced server (default)
+#   ./claude_log_viewer.sh --simple  # Run simple mode (original behavior)
 # ==============================================================================
 
 # --- Configuration ---
-# Default path for Claude Code projects.
-# Change this variable if your setup is different.
 PROJECT_DIR="$HOME/.claude/projects"
 PORT=8080
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# --- Script Execution ---
-
-echo "Navigating to the Claude project directory: $PROJECT_DIR"
-cd "$PROJECT_DIR" || { echo "Error: Directory not found: $PROJECT_DIR"; exit 1; }
-echo "Currently in: $(pwd)"
-echo
-
-# Step 1: Clean - Recursively delete all .html files in the directory
-echo ">>> Step 1: Cleaning up all old .html reports..."
-find . -type f -name "*.html" -delete
-echo "Cleanup complete."
-echo
-
-# Step 2: Generate - Use claude-code-log to regenerate reports
-echo ">>> Step 2: Regenerating all reports using claude-code-log..."
-uvx claude-code-log@latest
-if [ $? -ne 0 ]; then
-    echo "Error: claude-code-log failed to generate reports. Please check the output above. Aborting."
-    exit 1
+# --- Parse arguments ---
+SIMPLE_MODE=false
+if [[ "$1" == "--simple" ]]; then
+    SIMPLE_MODE=true
 fi
-echo "Reports generated successfully."
+
+echo "============================================================"
+echo "  Claude Log Viewer"
+echo "============================================================"
 echo
 
-# Step 3: View - Start a local web server for browsing
-echo ">>> Step 3: Starting a web server for browsing..."
-if command -v live-server >/dev/null 2>&1; then
-    echo "Starting live-server with auto-reload at http://127.0.0.1:$PORT..."
-    # Explicitly serve the current directory "." to avoid argument parsing issues.
-    live-server . --port $PORT --open
+if [[ "$SIMPLE_MODE" == true ]]; then
+    # Original simple mode
+    echo "Running in simple mode..."
+    echo "Project directory: $PROJECT_DIR"
+    cd "$PROJECT_DIR" || { echo "Error: Directory not found: $PROJECT_DIR"; exit 1; }
+    echo
+
+    echo ">>> Step 1: Cleaning up old HTML files..."
+    find . -type f -name "*.html" -delete
+    echo "Done."
+    echo
+
+    echo ">>> Step 2: Regenerating reports..."
+    uvx claude-code-log@latest
+    if [ $? -ne 0 ]; then
+        echo "Error: claude-code-log failed. Aborting."
+        exit 1
+    fi
+    echo "Done."
+    echo
+
+    echo ">>> Step 3: Starting server..."
+    if command -v live-server >/dev/null 2>&1; then
+        echo "Starting live-server at http://127.0.0.1:$PORT..."
+        live-server . --port $PORT --open
+    else
+        echo "Starting Python server at http://127.0.0.1:$PORT..."
+        python3 -m http.server $PORT
+    fi
 else
-    echo "live-server not found, falling back to Python's http.server."
-    echo "Hint: For auto-reload functionality, install live-server with: npm install -g live-server"
-    echo "Please manually open http://127.0.0.1:$PORT in your browser."
-    python3 -m http.server $PORT
+    # Enhanced mode with Python server
+    echo "Running enhanced mode with:"
+    echo "  - Auto-regeneration on file changes"
+    echo "  - Session selector UI"
+    echo "  - Individual session viewing"
+    echo
+    python3 "$SCRIPT_DIR/claude_log_server.py"
 fi
