@@ -23,8 +23,12 @@ import html
 
 # Configuration
 PROJECT_DIR = Path.home() / ".claude" / "projects"
-PORT = 8080
+PORT = 8088  # Changed from 8080 which is often in use
 WATCH_INTERVAL = 5  # seconds
+
+# Global state for live reload
+regeneration_in_progress = False
+regeneration_lock = threading.Lock()
 
 
 class SessionInfo:
@@ -62,6 +66,15 @@ def get_html_files_mtime(project_dir: Path) -> float:
 
 def regenerate_logs():
     """Run claude-code-log to regenerate HTML files"""
+    global regeneration_in_progress
+
+    # Prevent multiple simultaneous regenerations
+    with regeneration_lock:
+        if regeneration_in_progress:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Regeneration already in progress, skipping...")
+            return
+        regeneration_in_progress = True
+
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Regenerating logs...")
     try:
         result = subprocess.run(
@@ -81,6 +94,9 @@ def regenerate_logs():
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Warning: claude-code-log timed out")
     except Exception as e:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Error regenerating: {e}")
+    finally:
+        with regeneration_lock:
+            regeneration_in_progress = False
 
 
 def parse_sessions_from_combined(html_path: Path) -> list[SessionInfo]:
@@ -556,19 +572,36 @@ def generate_session_selector_html() -> str:
                 });
         }
 
-        // Auto-check for updates every 30 seconds
-        setInterval(() => {
-            fetch('/api/check-update')
+        // Live reload: check for version changes every 3 seconds
+        let currentVersion = null;
+        const notice = document.getElementById('refreshNotice');
+        const statusSpan = document.getElementById('lastUpdate');
+
+        function checkVersion() {
+            fetch('/api/version')
                 .then(r => r.json())
                 .then(data => {
-                    if (data.needsUpdate) {
-                        document.getElementById('refreshNotice').style.display = 'block';
-                        document.getElementById('refreshNotice').textContent = 'New logs detected! Click to refresh.';
-                        document.getElementById('refreshNotice').onclick = () => location.reload();
-                        document.getElementById('refreshNotice').style.cursor = 'pointer';
+                    // Show regenerating status
+                    if (data.regenerating) {
+                        statusSpan.innerHTML = '<span class="loading"></span> Regenerating logs...';
                     }
-                });
-        }, 30000);
+
+                    if (currentVersion === null) {
+                        currentVersion = data.version;
+                        console.log('Initial version:', currentVersion);
+                    } else if (data.version !== currentVersion && data.version > 0) {
+                        console.log('Version changed:', currentVersion, '->', data.version);
+                        notice.style.display = 'block';
+                        notice.textContent = 'Logs updated! Reloading...';
+                        setTimeout(() => location.reload(), 500);
+                    }
+                })
+                .catch(err => console.log('Version check failed:', err));
+        }
+
+        // Check version every 2 seconds for live reload
+        setInterval(checkVersion, 2000);
+        checkVersion(); // Initial check
 
         // Expand first project by default
         document.addEventListener('DOMContentLoaded', () => {
@@ -590,6 +623,14 @@ class LogViewerHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(PROJECT_DIR), **kwargs)
 
+    def end_headers(self):
+        """Override to add no-cache headers for HTML files"""
+        # Add no-cache headers for all responses
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.send_header('Pragma', 'no-cache')
+        self.send_header('Expires', '0')
+        super().end_headers()
+
     def do_GET(self):
         try:
             if self.path == '/' or self.path == '/index.html':
@@ -608,6 +649,19 @@ class LogViewerHandler(http.server.SimpleHTTPRequestHandler):
                 needs_update = source_mtime > html_mtime
 
                 response = json.dumps({'needsUpdate': needs_update})
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(response.encode())
+            elif self.path == '/api/version':
+                # Return HTML files modification time for live reload
+                html_mtime = get_html_files_mtime(PROJECT_DIR)
+                with regeneration_lock:
+                    in_progress = regeneration_in_progress
+                response = json.dumps({
+                    'version': html_mtime,
+                    'regenerating': in_progress
+                })
                 self.send_response(200)
                 self.send_header('Content-type', 'application/json')
                 self.end_headers()
@@ -683,6 +737,15 @@ def main():
     class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         allow_reuse_address = True
         daemon_threads = True
+
+        def server_bind(self):
+            import socket
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except (AttributeError, OSError):
+                pass
+            super().server_bind()
 
     httpd = ThreadedTCPServer(("", PORT), LogViewerHandler)
 

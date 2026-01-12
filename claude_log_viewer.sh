@@ -14,7 +14,7 @@
 
 # --- Configuration ---
 PROJECT_DIR="$HOME/.claude/projects"
-PORT=8080
+PORT=8088
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # --- Parse arguments ---
