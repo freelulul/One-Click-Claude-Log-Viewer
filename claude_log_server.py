@@ -64,8 +64,37 @@ def get_html_files_mtime(project_dir: Path) -> float:
     return latest_mtime
 
 
+def find_outdated_sessions():
+    """Find jsonl files that are newer than their corresponding HTML files"""
+    outdated = []
+    for project_dir in PROJECT_DIR.iterdir():
+        if not project_dir.is_dir():
+            continue
+        for jsonl_file in project_dir.glob("*.jsonl"):
+            # Skip agent files
+            if jsonl_file.name.startswith("agent-"):
+                continue
+            # Find corresponding HTML file
+            session_id = jsonl_file.stem
+            html_file = project_dir / f"session-{session_id}.html"
+            combined_html = project_dir / "combined_transcripts.html"
+
+            jsonl_mtime = jsonl_file.stat().st_mtime
+
+            # Check if HTML doesn't exist or is older than jsonl
+            if not html_file.exists():
+                outdated.append(jsonl_file)
+            elif html_file.stat().st_mtime < jsonl_mtime:
+                outdated.append(jsonl_file)
+            # Also check combined_transcripts.html
+            elif combined_html.exists() and combined_html.stat().st_mtime < jsonl_mtime:
+                if jsonl_file not in outdated:
+                    outdated.append(jsonl_file)
+    return outdated
+
+
 def regenerate_logs():
-    """Run claude-code-log to regenerate HTML files"""
+    """Run claude-code-log to regenerate HTML files (incremental)"""
     global regeneration_in_progress
 
     # Prevent multiple simultaneous regenerations
@@ -75,8 +104,41 @@ def regenerate_logs():
             return
         regeneration_in_progress = True
 
-    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Regenerating logs...")
     try:
+        # Find outdated sessions
+        outdated = find_outdated_sessions()
+
+        if not outdated:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] All sessions up-to-date, skipping regeneration")
+            return
+
+        print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Found {len(outdated)} outdated session(s), regenerating...")
+
+        # Group by project directory
+        projects_to_update = set()
+        for jsonl_file in outdated:
+            projects_to_update.add(jsonl_file.parent)
+            # Delete the outdated HTML file to force regeneration
+            session_id = jsonl_file.stem
+            html_file = jsonl_file.parent / f"session-{session_id}.html"
+            if html_file.exists():
+                try:
+                    html_file.unlink()
+                    print(f"  Deleted: {html_file.name}")
+                except Exception:
+                    pass
+
+        # Delete combined_transcripts.html for affected projects
+        for project_dir in projects_to_update:
+            combined = project_dir / "combined_transcripts.html"
+            if combined.exists():
+                try:
+                    combined.unlink()
+                    print(f"  Deleted: {project_dir.name}/combined_transcripts.html")
+                except Exception:
+                    pass
+
+        # Regenerate (claude-code-log will only generate missing files)
         result = subprocess.run(
             ["uvx", "claude-code-log@latest"],
             cwd=PROJECT_DIR,
@@ -85,7 +147,7 @@ def regenerate_logs():
             timeout=300
         )
         if result.returncode == 0:
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Logs regenerated successfully")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Regeneration complete ({len(outdated)} session(s) updated)")
         else:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Warning: claude-code-log returned non-zero")
             if result.stderr:
@@ -356,6 +418,17 @@ def generate_session_selector_html() -> str:
             margin-bottom: 8px;
         }
 
+        .newest-badge {
+            background: #10b981;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 0.7em;
+            font-weight: bold;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+
         .session-tokens {
             font-size: 0.8em;
             color: var(--text-muted);
@@ -508,18 +581,31 @@ def generate_session_selector_html() -> str:
             </div>
             <div class="sessions-list">
 '''
-            for session in sessions:
+            # Sort sessions by end timestamp (newest first)
+            sessions_sorted = sorted(sessions, key=lambda s: s.timestamp_end or '', reverse=True)
+            for idx, session in enumerate(sessions_sorted):
                 session_file = session.file_path or combined_path
                 session_display = session.title if session.title else session.session_id[:8]
+                # Format end timestamp for display
+                last_update = ""
+                if session.timestamp_end:
+                    try:
+                        from datetime import datetime as dt
+                        ts = dt.fromisoformat(session.timestamp_end.replace('Z', '+00:00'))
+                        last_update = ts.strftime('%Y-%m-%d %H:%M')
+                    except:
+                        last_update = session.timestamp_end[:16] if len(session.timestamp_end) > 16 else session.timestamp_end
+                # Mark newest session
+                newest_badge = '<span class="newest-badge">LATEST</span>' if idx == 0 else ''
 
                 html_content += f'''
                 <div class="session-item" data-session="{html.escape(session.session_id)}">
                     <div class="session-title">
-                        <span>{html.escape(session_display)}</span>
+                        <span>{html.escape(session_display)} {newest_badge}</span>
                         <span class="id">{session.session_id[:8]}</span>
                     </div>
                     <div class="session-meta">
-                        {session.messages} messages
+                        {session.messages} messages | <strong>Last: {last_update}</strong>
                     </div>
                     <div class="session-tokens">{html.escape(session.tokens)}</div>
                     <div class="session-preview">{html.escape(session.preview[:150])}</div>
@@ -572,8 +658,9 @@ def generate_session_selector_html() -> str:
                 });
         }
 
-        // Live reload: check for version changes every 3 seconds
+        // Live reload: check for version changes
         let currentVersion = null;
+        let pendingReload = false;
         const notice = document.getElementById('refreshNotice');
         const statusSpan = document.getElementById('lastUpdate');
 
@@ -584,23 +671,29 @@ def generate_session_selector_html() -> str:
                     // Show regenerating status
                     if (data.regenerating) {
                         statusSpan.innerHTML = '<span class="loading"></span> Regenerating logs...';
+                        pendingReload = true;
+                        return;
+                    } else {
+                        statusSpan.textContent = 'Last updated: ' + new Date().toLocaleString();
                     }
 
                     if (currentVersion === null) {
                         currentVersion = data.version;
                         console.log('Initial version:', currentVersion);
-                    } else if (data.version !== currentVersion && data.version > 0) {
-                        console.log('Version changed:', currentVersion, '->', data.version);
+                    } else if ((data.version !== currentVersion && data.version > 0) || pendingReload) {
+                        console.log('Version changed, reloading in 2s...');
+                        pendingReload = false;
                         notice.style.display = 'block';
                         notice.textContent = 'Logs updated! Reloading...';
-                        setTimeout(() => location.reload(), 500);
+                        // Wait for files to be fully written
+                        setTimeout(() => location.reload(), 2000);
                     }
                 })
                 .catch(err => console.log('Version check failed:', err));
         }
 
-        // Check version every 2 seconds for live reload
-        setInterval(checkVersion, 2000);
+        // Check version every 3 seconds for live reload
+        setInterval(checkVersion, 3000);
         checkVersion(); // Initial check
 
         // Expand first project by default
@@ -666,6 +759,54 @@ class LogViewerHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_header('Content-type', 'application/json')
                 self.end_headers()
                 self.wfile.write(response.encode())
+            elif self.path.endswith('.html'):
+                # Serve HTML files with injected auto-refresh script
+                file_path = PROJECT_DIR / self.path.lstrip('/')
+                if file_path.exists() and file_path.is_file():
+                    content = file_path.read_text(encoding='utf-8')
+                    # Inject auto-refresh script before </body>
+                    auto_refresh_script = '''
+<script>
+(function() {
+    let currentVersion = null;
+    let pendingReload = false;
+
+    function checkVersion() {
+        fetch('/api/version')
+            .then(r => r.json())
+            .then(data => {
+                // Don't reload while regenerating
+                if (data.regenerating) {
+                    console.log('Regenerating in progress...');
+                    pendingReload = true;
+                    return;
+                }
+
+                if (currentVersion === null) {
+                    currentVersion = data.version;
+                } else if ((data.version !== currentVersion && data.version > 0) || pendingReload) {
+                    console.log('Page updated, reloading in 2s...');
+                    pendingReload = false;
+                    // Wait a bit for file to be fully written
+                    setTimeout(() => location.reload(), 2000);
+                }
+            })
+            .catch(() => {});
+    }
+    setInterval(checkVersion, 3000);
+    checkVersion();
+})();
+</script>
+'''
+                    content = content.replace('</body>', auto_refresh_script + '</body>')
+                    content_bytes = content.encode('utf-8')
+                    self.send_response(200)
+                    self.send_header('Content-type', 'text/html; charset=utf-8')
+                    self.send_header('Content-Length', len(content_bytes))
+                    self.end_headers()
+                    self.wfile.write(content_bytes)
+                else:
+                    self.send_error(404, 'File not found')
             else:
                 super().do_GET()
         except Exception as e:
@@ -697,28 +838,48 @@ class LogViewerHandler(http.server.SimpleHTTPRequestHandler):
 def file_watcher():
     """Background thread to watch for file changes and auto-regenerate"""
     last_source_mtime = get_source_files_mtime(PROJECT_DIR)
+    last_change_time = 0
+    DEBOUNCE_SECONDS = 30  # Wait 30 seconds of no changes before regenerating
 
     while True:
         time.sleep(WATCH_INTERVAL)
         current_source_mtime = get_source_files_mtime(PROJECT_DIR)
 
         if current_source_mtime > last_source_mtime:
-            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Source files changed, regenerating...")
-            regenerate_logs()
+            # Source files changed, record the time
+            last_change_time = time.time()
             last_source_mtime = current_source_mtime
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Source files changed, waiting for stability...")
+
+        # Only regenerate if there were changes AND no new changes for DEBOUNCE_SECONDS
+        if last_change_time > 0 and (time.time() - last_change_time) >= DEBOUNCE_SECONDS:
+            print(f"\n[{datetime.now().strftime('%H:%M:%S')}] No changes for {DEBOUNCE_SECONDS}s, regenerating...")
+            regenerate_logs()
+            last_change_time = 0  # Reset after regeneration
 
 
-def initial_regeneration():
+def initial_regeneration(force_clean=False):
     """Run initial regeneration in background"""
-    print("Cleaning old HTML files...")
-    for html_file in PROJECT_DIR.rglob("*.html"):
-        try:
-            html_file.unlink()
-        except Exception:
-            pass
+    source_mtime = get_source_files_mtime(PROJECT_DIR)
+    html_mtime = get_html_files_mtime(PROJECT_DIR)
+
+    # Always regenerate to ensure latest data, but don't delete old files unless forced
+    if source_mtime > html_mtime:
+        print(f"Source files are newer (source: {source_mtime:.0f}, html: {html_mtime:.0f})")
+    else:
+        print(f"HTML files appear up-to-date, but regenerating anyway to ensure freshness...")
+
+    if force_clean:
+        print("Cleaning old HTML files...")
+        for html_file in PROJECT_DIR.rglob("*.html"):
+            try:
+                html_file.unlink()
+            except Exception:
+                pass
+
     print("Regenerating logs (this may take a moment)...")
     regenerate_logs()
-    print("Initial regeneration complete. Refresh browser to see sessions.")
+    print("Initial regeneration complete.")
 
 
 def main():
@@ -756,11 +917,12 @@ def main():
     # Run initial regeneration in background thread
     if not has_html:
         print("\nNo HTML files found. Regenerating in background...")
+        regen_thread = threading.Thread(target=lambda: initial_regeneration(force_clean=True), daemon=True)
+        regen_thread.start()
     else:
-        print("\nExisting HTML files found. Regenerating in background for fresh data...")
-
-    regen_thread = threading.Thread(target=initial_regeneration, daemon=True)
-    regen_thread.start()
+        print("\nRegenerating to ensure latest data...")
+        regen_thread = threading.Thread(target=initial_regeneration, daemon=True)
+        regen_thread.start()
 
     # Start file watcher thread
     watcher_thread = threading.Thread(target=file_watcher, daemon=True)
