@@ -33,7 +33,7 @@ regeneration_lock = threading.Lock()
 
 class SessionInfo:
     """Store session metadata"""
-    def __init__(self, session_id, title, timestamp_start, timestamp_end, messages, tokens, preview, file_path):
+    def __init__(self, session_id, title, timestamp_start, timestamp_end, messages, tokens, preview, file_path, jsonl_size=0, html_size=0, project_folder=None):
         self.session_id = session_id
         self.title = title
         self.timestamp_start = timestamp_start
@@ -42,6 +42,21 @@ class SessionInfo:
         self.tokens = tokens
         self.preview = preview
         self.file_path = file_path
+        self.jsonl_size = jsonl_size  # JSONL file size in bytes
+        self.html_size = html_size    # HTML file size in bytes
+        self.project_folder = project_folder  # Project folder name for deletion
+
+
+def format_size(size_bytes):
+    """Format file size in human-readable format"""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    elif size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    elif size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    else:
+        return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
 
 
 def get_source_files_mtime(project_dir: Path) -> float:
@@ -93,7 +108,7 @@ def find_outdated_sessions():
     return outdated
 
 
-def regenerate_logs():
+def regenerate_logs(force_clear=False):
     """Run claude-code-log to regenerate HTML files (incremental)"""
     global regeneration_in_progress
 
@@ -108,16 +123,28 @@ def regenerate_logs():
         # Find outdated sessions
         outdated = find_outdated_sessions()
 
-        if not outdated:
+        if not outdated and not force_clear:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] All sessions up-to-date, skipping regeneration")
             return
 
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Found {len(outdated)} outdated session(s), regenerating...")
 
-        # Group by project directory
+        # Check if any combined_transcripts.html files are missing (claude-code-log cache bug workaround)
+        missing_combined = False
         projects_to_update = set()
         for jsonl_file in outdated:
             projects_to_update.add(jsonl_file.parent)
+
+        for project_dir in PROJECT_DIR.iterdir():
+            if project_dir.is_dir():
+                combined = project_dir / "combined_transcripts.html"
+                has_jsonl = any(project_dir.glob("*.jsonl"))
+                if has_jsonl and not combined.exists():
+                    missing_combined = True
+                    print(f"  Missing: {project_dir.name}/combined_transcripts.html")
+
+        # Group by project directory
+        for jsonl_file in outdated:
             # Delete the outdated HTML file to force regeneration
             session_id = jsonl_file.stem
             html_file = jsonl_file.parent / f"session-{session_id}.html"
@@ -138,9 +165,15 @@ def regenerate_logs():
                 except Exception:
                     pass
 
+        # If combined_transcripts.html is missing, use --clear-html to workaround claude-code-log cache bug
+        cmd = ["uvx", "claude-code-log@latest"]
+        if missing_combined or force_clear:
+            cmd.append("--clear-html")
+            print(f"  Using --clear-html to fix missing combined_transcripts.html")
+
         # Regenerate (claude-code-log will only generate missing files)
         result = subprocess.run(
-            ["uvx", "claude-code-log@latest"],
+            cmd,
             cwd=PROJECT_DIR,
             capture_output=True,
             text=True,
@@ -197,9 +230,14 @@ def parse_sessions_from_combined(html_path: Path) -> list[SessionInfo]:
         preview_match = re.search(r"<pre class='session-preview'>(.*?)</pre>", link_content, re.DOTALL)
         preview = html.unescape(preview_match.group(1)[:200]) if preview_match else ""
 
-        # Find individual session file
+        # Find individual session file and get sizes
         parent_dir = html_path.parent
         session_file = parent_dir / f"session-{session_id}.html"
+        jsonl_file = parent_dir / f"{session_id}.jsonl"
+
+        # Get file sizes
+        jsonl_size = jsonl_file.stat().st_size if jsonl_file.exists() else 0
+        html_size = session_file.stat().st_size if session_file.exists() else 0
 
         sessions.append(SessionInfo(
             session_id=session_id,
@@ -209,7 +247,10 @@ def parse_sessions_from_combined(html_path: Path) -> list[SessionInfo]:
             messages=messages,
             tokens=tokens,
             preview=preview,
-            file_path=str(session_file.relative_to(PROJECT_DIR)) if session_file.exists() else None
+            file_path=str(session_file.relative_to(PROJECT_DIR)) if session_file.exists() else None,
+            jsonl_size=jsonl_size,
+            html_size=html_size,
+            project_folder=parent_dir.name
         ))
 
     return sessions
@@ -484,6 +525,116 @@ def generate_session_selector_html() -> str:
             background: #e5e7eb;
         }
 
+        .btn-delete {
+            background: #fee2e2;
+            color: #dc2626;
+            border: 1px solid #fecaca;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 0.9em;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-delete:hover {
+            background: #fecaca;
+            border-color: #f87171;
+        }
+
+        .session-size {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+        }
+
+        .size-badge {
+            font-size: 0.75em;
+            padding: 2px 8px;
+            border-radius: 4px;
+            background: #e0e7ff;
+            color: #4338ca;
+        }
+
+        .size-badge.total {
+            background: #fef3c7;
+            color: #b45309;
+            font-weight: 600;
+        }
+
+        .project-size-info {
+            background: #f0f9ff;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            gap: 16px;
+            font-size: 0.85em;
+            color: #0369a1;
+        }
+
+        .project-size-info span {
+            background: white;
+            padding: 4px 10px;
+            border-radius: 4px;
+            border: 1px solid #bae6fd;
+        }
+
+        .confirm-dialog {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .confirm-dialog-content {
+            background: white;
+            padding: 24px;
+            border-radius: 12px;
+            max-width: 400px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
+        }
+
+        .confirm-dialog h3 {
+            margin-bottom: 12px;
+            color: #dc2626;
+        }
+
+        .confirm-dialog p {
+            margin-bottom: 20px;
+            color: var(--text-muted);
+        }
+
+        .confirm-dialog-buttons {
+            display: flex;
+            gap: 12px;
+            justify-content: flex-end;
+        }
+
+        .confirm-dialog button {
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: none;
+            cursor: pointer;
+            font-weight: 500;
+        }
+
+        .confirm-dialog .btn-cancel {
+            background: #f3f4f6;
+            color: var(--text);
+        }
+
+        .confirm-dialog .btn-confirm-delete {
+            background: #dc2626;
+            color: white;
+        }
+
         .expand-icon {
             transition: transform 0.3s;
         }
@@ -583,6 +734,18 @@ def generate_session_selector_html() -> str:
 '''
             # Sort sessions by end timestamp (newest first)
             sessions_sorted = sorted(sessions, key=lambda s: s.timestamp_end or '', reverse=True)
+            # Calculate total size for project
+            total_jsonl = sum(s.jsonl_size for s in sessions_sorted)
+            total_html = sum(s.html_size for s in sessions_sorted)
+            project_total_size = format_size(total_jsonl + total_html)
+
+            html_content += f'''
+                <div class="project-size-info">
+                    <span>Total: {project_total_size}</span>
+                    <span>Log: {format_size(total_jsonl)}</span>
+                    <span>HTML: {format_size(total_html)}</span>
+                </div>
+'''
             for idx, session in enumerate(sessions_sorted):
                 session_file = session.file_path or combined_path
                 session_display = session.title if session.title else session.session_id[:8]
@@ -597,9 +760,13 @@ def generate_session_selector_html() -> str:
                         last_update = session.timestamp_end[:16] if len(session.timestamp_end) > 16 else session.timestamp_end
                 # Mark newest session
                 newest_badge = '<span class="newest-badge">LATEST</span>' if idx == 0 else ''
+                # Format file sizes
+                jsonl_size_str = format_size(session.jsonl_size)
+                html_size_str = format_size(session.html_size)
+                total_size_str = format_size(session.jsonl_size + session.html_size)
 
                 html_content += f'''
-                <div class="session-item" data-session="{html.escape(session.session_id)}">
+                <div class="session-item" data-session="{html.escape(session.session_id)}" data-project="{html.escape(folder_name)}">
                     <div class="session-title">
                         <span>{html.escape(session_display)} {newest_badge}</span>
                         <span class="id">{session.session_id[:8]}</span>
@@ -607,11 +774,17 @@ def generate_session_selector_html() -> str:
                     <div class="session-meta">
                         {session.messages} messages | <strong>Last: {last_update}</strong>
                     </div>
+                    <div class="session-size">
+                        <span class="size-badge">Log: {jsonl_size_str}</span>
+                        <span class="size-badge">HTML: {html_size_str}</span>
+                        <span class="size-badge total">Total: {total_size_str}</span>
+                    </div>
                     <div class="session-tokens">{html.escape(session.tokens)}</div>
                     <div class="session-preview">{html.escape(session.preview[:150])}</div>
                     <div class="session-actions">
                         <a href="{html.escape(session_file)}" class="btn-view">View Session</a>
                         <a href="{html.escape(session_file)}" target="_blank" class="btn-new-tab">Open in New Tab</a>
+                        <button class="btn-delete" onclick="deleteSession('{html.escape(folder_name)}', '{html.escape(session.session_id)}', event)">Delete</button>
                     </div>
                 </div>
 '''
@@ -703,7 +876,80 @@ def generate_session_selector_html() -> str:
                 toggleProject(firstProject);
             }
         });
+
+        // Delete session functionality
+        function deleteSession(projectFolder, sessionId, event) {
+            event.stopPropagation();
+
+            // Create confirm dialog
+            const dialog = document.createElement('div');
+            dialog.className = 'confirm-dialog';
+            dialog.innerHTML = `
+                <div class="confirm-dialog-content">
+                    <h3>Delete Session?</h3>
+                    <p>This will permanently delete the session log file and HTML file. This action cannot be undone.</p>
+                    <p style="font-size: 0.85em; color: #6b7280;">Session ID: ${sessionId.substring(0, 8)}...</p>
+                    <div class="confirm-dialog-buttons">
+                        <button class="btn-cancel" onclick="this.closest('.confirm-dialog').remove()">Cancel</button>
+                        <button class="btn-confirm-delete" onclick="confirmDelete('${projectFolder}', '${sessionId}', this)">Delete</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(dialog);
+
+            // Close on background click
+            dialog.addEventListener('click', (e) => {
+                if (e.target === dialog) dialog.remove();
+            });
+        }
+
+        function confirmDelete(projectFolder, sessionId, btn) {
+            btn.disabled = true;
+            btn.textContent = 'Deleting...';
+
+            fetch('/api/delete-session', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ project: projectFolder, session_id: sessionId })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.status === 'ok') {
+                    // Remove the session card from UI
+                    const sessionCard = document.querySelector(`[data-session="${sessionId}"]`);
+                    if (sessionCard) {
+                        sessionCard.style.animation = 'fadeOut 0.3s ease';
+                        setTimeout(() => {
+                            sessionCard.remove();
+                            // Update session count badge
+                            const projectCard = document.querySelector(`[data-project="${projectFolder}"]`)?.closest('.project-card');
+                            if (projectCard) {
+                                const badge = projectCard.querySelector('.badge');
+                                const remaining = projectCard.querySelectorAll('.session-item').length;
+                                badge.textContent = remaining + ' session' + (remaining !== 1 ? 's' : '');
+                            }
+                        }, 300);
+                    }
+                    document.querySelector('.confirm-dialog')?.remove();
+                } else {
+                    alert('Delete failed: ' + data.message);
+                    btn.disabled = false;
+                    btn.textContent = 'Delete';
+                }
+            })
+            .catch(err => {
+                alert('Error: ' + err);
+                btn.disabled = false;
+                btn.textContent = 'Delete';
+            });
+        }
     </script>
+    <style>
+        @keyframes fadeOut {
+            from { opacity: 1; transform: translateX(0); }
+            to { opacity: 0; transform: translateX(-20px); }
+        }
+    </style>
 </body>
 </html>
 '''
@@ -823,6 +1069,70 @@ class LogViewerHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_header('Content-type', 'application/json')
                 self.end_headers()
                 self.wfile.write(response.encode())
+            elif self.path == '/api/delete-session':
+                # Delete a session (jsonl and html files)
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length)
+                data = json.loads(post_data.decode('utf-8'))
+
+                project_folder = data.get('project', '')
+                session_id = data.get('session_id', '')
+
+                if not project_folder or not session_id:
+                    response = json.dumps({'status': 'error', 'message': 'Missing project or session_id'})
+                else:
+                    # Validate session_id format (UUID)
+                    import re
+                    if not re.match(r'^[a-f0-9-]{36}$', session_id):
+                        response = json.dumps({'status': 'error', 'message': 'Invalid session_id format'})
+                    else:
+                        project_path = PROJECT_DIR / project_folder
+                        if not project_path.exists() or not project_path.is_dir():
+                            response = json.dumps({'status': 'error', 'message': 'Project not found'})
+                        else:
+                            deleted_files = []
+                            errors = []
+
+                            # Delete JSONL file
+                            jsonl_file = project_path / f"{session_id}.jsonl"
+                            if jsonl_file.exists():
+                                try:
+                                    jsonl_file.unlink()
+                                    deleted_files.append(jsonl_file.name)
+                                    print(f"[Delete] Deleted {jsonl_file}")
+                                except Exception as e:
+                                    errors.append(f"Failed to delete {jsonl_file.name}: {e}")
+
+                            # Delete HTML file
+                            html_file = project_path / f"session-{session_id}.html"
+                            if html_file.exists():
+                                try:
+                                    html_file.unlink()
+                                    deleted_files.append(html_file.name)
+                                    print(f"[Delete] Deleted {html_file}")
+                                except Exception as e:
+                                    errors.append(f"Failed to delete {html_file.name}: {e}")
+
+                            # Delete combined_transcripts.html to trigger regeneration
+                            combined_file = project_path / "combined_transcripts.html"
+                            if combined_file.exists():
+                                try:
+                                    combined_file.unlink()
+                                    print(f"[Delete] Deleted combined_transcripts.html for regeneration")
+                                except Exception:
+                                    pass
+
+                            if errors:
+                                response = json.dumps({'status': 'error', 'message': '; '.join(errors)})
+                            elif deleted_files:
+                                response = json.dumps({'status': 'ok', 'deleted': deleted_files})
+                            else:
+                                response = json.dumps({'status': 'error', 'message': 'No files found to delete'})
+
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.end_headers()
+                self.wfile.write(response.encode())
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -839,7 +1149,9 @@ def file_watcher():
     """Background thread to watch for file changes and auto-regenerate"""
     last_source_mtime = get_source_files_mtime(PROJECT_DIR)
     last_change_time = 0
-    DEBOUNCE_SECONDS = 30  # Wait 30 seconds of no changes before regenerating
+    DEBOUNCE_SECONDS = 60  # Wait 60 seconds of no changes before regenerating (increased to avoid infinite loop)
+    MAX_REGEN_FREQUENCY = 300  # Don't regenerate more often than every 5 minutes
+    last_regen_time = 0
 
     while True:
         time.sleep(WATCH_INTERVAL)
@@ -851,11 +1163,19 @@ def file_watcher():
             last_source_mtime = current_source_mtime
             print(f"[{datetime.now().strftime('%H:%M:%S')}] Source files changed, waiting for stability...")
 
-        # Only regenerate if there were changes AND no new changes for DEBOUNCE_SECONDS
+        # Only regenerate if:
+        # 1. There were changes AND no new changes for DEBOUNCE_SECONDS
+        # 2. Haven't regenerated in the last MAX_REGEN_FREQUENCY seconds
+        time_since_last_regen = time.time() - last_regen_time
         if last_change_time > 0 and (time.time() - last_change_time) >= DEBOUNCE_SECONDS:
+            if time_since_last_regen < MAX_REGEN_FREQUENCY:
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] Skipping regeneration (last regen was {time_since_last_regen:.0f}s ago, min interval is {MAX_REGEN_FREQUENCY}s)")
+                last_change_time = 0  # Reset to avoid spamming this message
+                continue
             print(f"\n[{datetime.now().strftime('%H:%M:%S')}] No changes for {DEBOUNCE_SECONDS}s, regenerating...")
             regenerate_logs()
             last_change_time = 0  # Reset after regeneration
+            last_regen_time = time.time()
 
 
 def initial_regeneration(force_clean=False):
@@ -878,7 +1198,7 @@ def initial_regeneration(force_clean=False):
                 pass
 
     print("Regenerating logs (this may take a moment)...")
-    regenerate_logs()
+    regenerate_logs(force_clear=force_clean)
     print("Initial regeneration complete.")
 
 
