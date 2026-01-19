@@ -82,6 +82,10 @@ def get_html_files_mtime(project_dir: Path) -> float:
 def find_outdated_sessions():
     """Find jsonl files that are newer than their corresponding HTML files"""
     outdated = []
+    current_time = time.time()
+    # Skip files modified in the last 30 seconds - they are likely active sessions
+    ACTIVE_SESSION_THRESHOLD = 30
+
     for project_dir in PROJECT_DIR.iterdir():
         if not project_dir.is_dir():
             continue
@@ -89,12 +93,17 @@ def find_outdated_sessions():
             # Skip agent files
             if jsonl_file.name.startswith("agent-"):
                 continue
+
+            jsonl_mtime = jsonl_file.stat().st_mtime
+
+            # Skip files that were modified very recently (likely active sessions)
+            if current_time - jsonl_mtime < ACTIVE_SESSION_THRESHOLD:
+                continue
+
             # Find corresponding HTML file
             session_id = jsonl_file.stem
             html_file = project_dir / f"session-{session_id}.html"
             combined_html = project_dir / "combined_transcripts.html"
-
-            jsonl_mtime = jsonl_file.stat().st_mtime
 
             # Check if HTML doesn't exist or is older than jsonl
             if not html_file.exists():
@@ -129,19 +138,19 @@ def regenerate_logs(force_clear=False):
 
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Found {len(outdated)} outdated session(s), regenerating...")
 
-        # Check if any combined_transcripts.html files are missing (claude-code-log cache bug workaround)
-        missing_combined = False
+        # Collect projects that need updating
         projects_to_update = set()
         for jsonl_file in outdated:
             projects_to_update.add(jsonl_file.parent)
 
-        for project_dir in PROJECT_DIR.iterdir():
-            if project_dir.is_dir():
-                combined = project_dir / "combined_transcripts.html"
-                has_jsonl = any(project_dir.glob("*.jsonl"))
-                if has_jsonl and not combined.exists():
-                    missing_combined = True
-                    print(f"  Missing: {project_dir.name}/combined_transcripts.html")
+        # Check if any combined_transcripts.html files are missing for projects we're updating
+        # Only check projects_to_update to avoid triggering regeneration for active sessions
+        missing_combined = False
+        for project_dir in projects_to_update:
+            combined = project_dir / "combined_transcripts.html"
+            if not combined.exists():
+                missing_combined = True
+                print(f"  Missing: {project_dir.name}/combined_transcripts.html")
 
         # Group by project directory
         for jsonl_file in outdated:
