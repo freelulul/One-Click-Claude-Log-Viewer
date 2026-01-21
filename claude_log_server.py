@@ -174,13 +174,19 @@ def regenerate_logs(force_clear=False):
                 except Exception:
                     pass
 
-        # If combined_transcripts.html is missing, use --clear-html to workaround claude-code-log cache bug
-        cmd = ["uvx", "claude-code-log@latest"]
+        # If combined_transcripts.html is missing or force_clear, clear cache first then regenerate
         if missing_combined or force_clear:
-            cmd.append("--clear-html")
-            print(f"  Using --clear-html to fix missing combined_transcripts.html")
+            print(f"  Clearing cache to force full regeneration...")
+            subprocess.run(
+                ["uvx", "claude-code-log@latest", "--clear-cache"],
+                cwd=PROJECT_DIR,
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
 
-        # Regenerate (claude-code-log will only generate missing files)
+        # Regenerate HTML files
+        cmd = ["uvx", "claude-code-log@latest"]
         result = subprocess.run(
             cmd,
             cwd=PROJECT_DIR,
@@ -288,6 +294,13 @@ def get_all_projects() -> dict:
 def generate_session_selector_html() -> str:
     """Generate a custom session selector page"""
     projects = get_all_projects()
+
+    # If no projects found but there are jsonl files, trigger regeneration
+    if not projects:
+        has_jsonl = any(PROJECT_DIR.rglob("*.jsonl"))
+        if has_jsonl and not regeneration_in_progress:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] No HTML files but jsonl exists, triggering regeneration...")
+            threading.Thread(target=lambda: regenerate_logs(force_clear=True), daemon=True).start()
 
     html_content = '''<!DOCTYPE html>
 <html lang="en">
