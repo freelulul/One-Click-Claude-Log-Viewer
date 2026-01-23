@@ -216,12 +216,36 @@ def parse_sessions_from_combined(html_path: Path) -> list[SessionInfo]:
         return sessions
 
     content = html_path.read_text(encoding='utf-8')
+    parent_dir = html_path.parent
 
-    # Find session links using regex
-    pattern = r"<a href='#msg-session-([^']+)'[^>]*class='session-link'>(.*?)</a>"
-    matches = re.findall(pattern, content, re.DOTALL)
+    # First, build a mapping from msg-id to session-id by parsing session-headers
+    # Format: <div class='message session-header' data-message-id='d-0' data-session-id='7f496fad-...' id='msg-d-0'>
+    msg_to_session = {}
+    session_ids_found = set()
+    header_pattern = r"data-message-id='([^']+)'[^>]*data-session-id='([0-9a-f-]{36})'"
+    for match in re.finditer(header_pattern, content):
+        msg_id = match.group(1)  # e.g., 'd-0'
+        session_id = match.group(2)  # e.g., '7f496fad-250e-4c0b-b1a2-5fb196aabd77'
+        msg_to_session[msg_id] = session_id
+        session_ids_found.add(session_id)
 
-    for session_id, link_content in matches:
+    # Find session links - new format: <a href='#msg-d-0' class='session-link'>
+    # Updated pattern to handle newlines between href and class
+    link_pattern = r"<a\s+href='#msg-([^']+)'\s*class='session-link'>(.*?)</a>"
+    matches = re.findall(link_pattern, content, re.DOTALL)
+
+    # Track which session IDs we've processed
+    processed_sessions = set()
+
+    for msg_id, link_content in matches:
+        # Get the full session_id from the mapping
+        session_id = msg_to_session.get(msg_id, msg_id)
+
+        # Skip if not a valid session ID (36 chars UUID format)
+        if len(session_id) != 36 or session_id in processed_sessions:
+            continue
+        processed_sessions.add(session_id)
+
         # Extract title
         title_match = re.search(r"<div class='session-link-title'>\s*(.*?)\s*</div>", link_content, re.DOTALL)
         title = title_match.group(1).strip() if title_match else session_id[:8]
@@ -246,7 +270,6 @@ def parse_sessions_from_combined(html_path: Path) -> list[SessionInfo]:
         preview = html.unescape(preview_match.group(1)[:200]) if preview_match else ""
 
         # Find individual session file and get sizes
-        parent_dir = html_path.parent
         session_file = parent_dir / f"session-{session_id}.html"
         jsonl_file = parent_dir / f"{session_id}.jsonl"
 
@@ -267,6 +290,52 @@ def parse_sessions_from_combined(html_path: Path) -> list[SessionInfo]:
             html_size=html_size,
             project_folder=parent_dir.name
         ))
+
+    # Fallback: If no sessions found from session-links, try to get sessions directly from jsonl files
+    if not sessions:
+        for jsonl_file in parent_dir.glob("*.jsonl"):
+            # Skip agent files
+            if jsonl_file.name.startswith("agent-"):
+                continue
+
+            session_id = jsonl_file.stem
+            # Validate UUID format
+            if len(session_id) != 36:
+                continue
+
+            session_file = parent_dir / f"session-{session_id}.html"
+
+            # Get file sizes
+            jsonl_size = jsonl_file.stat().st_size if jsonl_file.exists() else 0
+            html_size = session_file.stat().st_size if session_file.exists() else 0
+
+            # Try to get basic info from jsonl
+            title = session_id[:8]
+            try:
+                with open(jsonl_file, 'r', encoding='utf-8') as f:
+                    first_line = f.readline()
+                    if first_line:
+                        data = json.loads(first_line)
+                        if 'message' in data and isinstance(data['message'], dict):
+                            content_val = data['message'].get('content', '')
+                            if isinstance(content_val, str):
+                                title = content_val[:50] or session_id[:8]
+            except:
+                pass
+
+            sessions.append(SessionInfo(
+                session_id=session_id,
+                title=title,
+                timestamp_start="",
+                timestamp_end="",
+                messages=0,
+                tokens="",
+                preview="",
+                file_path=str(session_file.relative_to(PROJECT_DIR)) if session_file.exists() else None,
+                jsonl_size=jsonl_size,
+                html_size=html_size,
+                project_folder=parent_dir.name
+            ))
 
     return sessions
 
