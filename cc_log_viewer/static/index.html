@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Claude Code Log Viewer</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/vendor/highlight.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="topbar-left">
+    <button id="btn-sidebar" class="icon-btn" title="Pick session (Ctrl+P)" aria-label="Pick session">
+      <span class="hamburger">☰</span>
+    </button>
+    <div class="brand-name">cc-log-viewer</div>
+    <div id="session-info" class="session-info"></div>
+  </div>
+  <div id="filter-bar" class="filter-bar"></div>
+  <div class="topbar-right">
+    <button id="btn-refresh" class="icon-btn" title="Refresh (F5 also works)" aria-label="Refresh">
+      <span class="rotate-on-busy">↻</span>
+    </button>
+    <span id="tz-label" class="tz-label">tz: …</span>
+    <button id="btn-help" class="icon-btn" title="Show SSH tunnel command" aria-label="Help">?</button>
+  </div>
+</header>
+
+<main id="main-area">
+  <!-- Empty state shown when no session selected -->
+  <div id="empty-state" class="empty-state">
+    <div class="empty-state-card">
+      <h1>cc-log-viewer</h1>
+      <p>Pick a project from the sidebar to start.</p>
+      <button id="btn-empty-pick" class="btn-primary">Open sidebar</button>
+    </div>
+  </div>
+
+  <!-- Timeline (full width when detail closed) -->
+  <section id="pane-timeline" class="pane-timeline" hidden>
+    <div id="timeline-status-bar" class="status-bar"></div>
+    <div id="timeline-scroll" class="timeline-scroll">
+      <div id="timeline-spacer"></div>
+      <div id="timeline-rows"></div>
+    </div>
+  </section>
+
+  <!-- Detail panel (slides in from right when message clicked) -->
+  <aside id="pane-detail" class="pane-detail closed">
+    <header class="detail-head">
+      <div class="detail-head-left">
+        <span id="detail-title">Detail</span>
+      </div>
+      <div class="detail-head-right">
+        <button id="btn-detail-prev" class="icon-btn" title="Previous (k)" aria-label="Prev">↑</button>
+        <button id="btn-detail-next" class="icon-btn" title="Next (j)" aria-label="Next">↓</button>
+        <button id="btn-detail-close" class="icon-btn" title="Close (Esc)" aria-label="Close">×</button>
+      </div>
+    </header>
+    <div id="detail-content" class="detail-content scroll"></div>
+  </aside>
+</main>
+
+<!-- Picker drawer (slides in from left) -->
+<div id="drawer-backdrop" class="drawer-backdrop"></div>
+<aside id="drawer-picker" class="drawer-picker closed">
+  <header class="drawer-head">
+    <span class="drawer-title">Projects</span>
+    <button id="btn-drawer-close" class="icon-btn" title="Close (Esc)" aria-label="Close">×</button>
+  </header>
+  <div class="drawer-cols">
+    <div id="project-list" class="project-list scroll"></div>
+    <div id="date-list" class="date-list scroll">
+      <div class="empty-hint">Pick a project to see its dates</div>
+    </div>
+  </div>
+</aside>
+
+<!-- Help / SSH popover -->
+<div id="help-popover" class="help-popover closed">
+  <h3>Connect</h3>
+  <div class="ssh-cmd-box">
+    <code id="ssh-cmd"></code>
+    <button id="btn-copy-ssh" class="btn-mini">copy</button>
+  </div>
+  <div class="hint">
+    Run that on your laptop, then open <code id="local-url">http://127.0.0.1:8088/</code> in a local browser.
+  </div>
+  <h4>Keyboard</h4>
+  <ul class="kbd-list">
+    <li><kbd>Esc</kbd> close drawers / detail</li>
+    <li><kbd>j</kbd> / <kbd>k</kbd> next / previous message</li>
+    <li><kbd>Ctrl+P</kbd> open sidebar</li>
+    <li><kbd>F5</kbd> reload (picks up newly appended log lines)</li>
+  </ul>
+</div>
+
+<div id="toast"></div>
+
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/highlight.min.js"></script>
+<script src="/static/app.js"></script>
+
+</body>
+</html>
