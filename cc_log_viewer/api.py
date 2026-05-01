@@ -146,11 +146,27 @@ class AppState:
     def list_projects(self) -> list[dict[str, Any]]:
         """
         Cheap directory listing (no indexing). The frontend uses this for the
-        leftmost pane.
+        project picker. Filters out projects with zero sessions and sorts by
+        most-recently-modified session first so the user lands on the project
+        they're actively working in.
         """
         out: list[dict[str, Any]] = []
         for pdir in cache_mod.discover_projects(self.projects_root):
             sessions = cache_mod.discover_sessions(pdir)
+            if not sessions:
+                # Skip projects with no jsonl sessions — they only clutter
+                # the picker (e.g. cache leftovers, deleted logs).
+                continue
+            # Project mtime = max session jsonl mtime. Cheap stat() loop;
+            # number of sessions per project is small (tens at most).
+            mtime = 0.0
+            for sjsonl in sessions:
+                try:
+                    st = sjsonl.stat()
+                    if st.st_mtime > mtime:
+                        mtime = st.st_mtime
+                except OSError:
+                    continue
             # Project dir names follow CC's convention: leading '-' then path
             # with '/' -> '-'. We can't disambiguate real dashes from path
             # separators, so just strip the leading dash and show the rest as
@@ -161,7 +177,10 @@ class AppState:
                 "display_name": display_name,
                 "session_count": len(sessions),
                 "session_paths": [s.stem for s in sessions],
+                "mtime": mtime,
             })
+        # Newest-modified first.
+        out.sort(key=lambda p: p["mtime"], reverse=True)
         return out
 
     def project_dates(

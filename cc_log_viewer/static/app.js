@@ -68,6 +68,10 @@ const S = {
 
   filters: { ...FILTER_DEFAULT },
   expandedSpans: new Set(),  // group indices that are expanded
+  // Date-scope filter: when set, the timeline shows ONLY entries whose
+  // timestamp falls on this YYYY-MM-DD. Default scope = the date the user
+  // picked in the drawer. User clears via the × in the topbar chip.
+  dateScopeFilter: null,
 
   selectedEntryIdx: null,
   fetchedEntries: new Map(),
@@ -457,6 +461,7 @@ function resetSession(opts = {}) {
   S.positions = null;
   S.totalHeight = 0;
   S.expandedSpans.clear();
+  S.dateScopeFilter = null;
   if (!opts.keepSelection) S.selectedEntryIdx = null;
   S.fetchedEntries.clear();
   D.timelineSpacer.style.height = "0px";
@@ -477,12 +482,48 @@ function updateSessionInfo() {
   const ses = S.selectedSession;
   const hue = hueFor(ses.color_idx);
   const dayChip = ses.day_n != null ? `<span class="sess-meta">Day ${ses.day_n}/${ses.day_total}</span>` : "";
-  const totalChip = S.sessionMeta && S.sessionMeta.total ? `<span class="sess-meta">${S.sessionMeta.total.toLocaleString()} entries</span>` : "";
+  // Date-scope chip: clickable × clears the scope so user can fall back to
+  // a full-session view. Default scope = the date the user picked.
+  let scopeChip = "";
+  if (S.dateScopeFilter) {
+    let scopedCount = "";
+    if (S.sessionMeta && S.sessionMeta.by_date) {
+      const arr = S.sessionMeta.by_date[S.dateScopeFilter];
+      if (Array.isArray(arr)) scopedCount = ` · ${arr.length.toLocaleString()}`;
+    }
+    scopeChip = `<span class="date-scope-chip" title="Showing only ${escHtml(S.dateScopeFilter)} — click × to show all dates">📅 ${escHtml(S.dateScopeFilter)}${scopedCount}<button class="date-scope-clear" aria-label="Show all dates">×</button></span>`;
+  }
+  const totalText = S.sessionMeta && S.sessionMeta.total
+    ? (S.dateScopeFilter
+       ? `<span class="sess-meta">${S.sessionMeta.total.toLocaleString()} total</span>`
+       : `<span class="sess-meta">${S.sessionMeta.total.toLocaleString()} entries</span>`)
+    : "";
   D.sessionInfo.innerHTML = `
     <span class="sess-dot" style="background: hsl(${hue}, 70%, 60%)"></span>
     <span class="sess-label" title="${escHtml(ses.label || ses.sessionPath)}">${escHtml(ses.label || ses.sessionPath.slice(0, 8))}</span>
-    ${dayChip}${totalChip}
+    ${dayChip}${totalText}${scopeChip}
   `;
+  const clearBtn = D.sessionInfo.querySelector(".date-scope-clear");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      clearDateScope();
+    });
+  }
+}
+
+function clearDateScope() {
+  if (!S.dateScopeFilter) return;
+  S.dateScopeFilter = null;
+  computeGroupsAndLayout();
+  renderStatusBar();
+  updateSessionInfo();
+  scheduleRender();
+}
+
+function setDateScope(date) {
+  S.dateScopeFilter = date || null;
+  // Layout recompute happens via the caller (loadSession or filter toggle).
 }
 
 async function onSelectSession(date, sessionPath, firstIdxOnDate) {
@@ -509,6 +550,10 @@ async function onSelectSession(date, sessionPath, firstIdxOnDate) {
   S.selectedSession.color_idx = colorIdx;
   S.selectedSession.day_n = dayN;
   S.selectedSession.day_total = dayTotal;
+  // Default scope: the picked date. User can clear via × in the topbar.
+  // 90% of the time a multi-day session has tens-of-thousands of entries
+  // and the user only cares about today's activity.
+  S.dateScopeFilter = date || null;
   hideEmptyState();
   updateSessionInfo();
   closeDrawer();
@@ -642,6 +687,17 @@ function computeGroupsAndLayout() {
   const groups = [];
   let span = null;
 
+  // Date-scope: when set, only consider entries whose date matches.
+  // by_date[date] is an array of entry indices for that date.
+  let scopeIndices = null;
+  if (S.dateScopeFilter && S.sessionMeta.by_date) {
+    const arr = S.sessionMeta.by_date[S.dateScopeFilter];
+    if (Array.isArray(arr)) scopeIndices = new Set(arr);
+  }
+  // If scope is set, iterate only the in-scope contiguous range. Spans
+  // never bridge across-date entries because we hard-skip out-of-scope
+  // indices, which naturally flushes any pending span at the boundary.
+
   function flushSpan() {
     if (!span) return;
     // Only emit span if it has at least one entry whose class is enabled.
@@ -654,6 +710,12 @@ function computeGroupsAndLayout() {
   }
 
   for (let i = 0, n = fc.length; i < n; i++) {
+    if (scopeIndices && !scopeIndices.has(i)) {
+      // Crossing a date boundary — break any in-progress span so we don't
+      // create a span that spans across hidden out-of-scope entries.
+      flushSpan();
+      continue;
+    }
     const cls = fc[i];
     if (compactSet.has(i)) {
       flushSpan();
@@ -1194,6 +1256,11 @@ function renderDetail(eIdx, entry) {
   if (window.hljs) {
     requestIdleCallback(() => {
       D.detailContent.querySelectorAll("pre code").forEach((el) => {
+        // Only highlight blocks that marked tagged with an explicit
+        // language. Untagged code blocks are usually prose / log output
+        // (markdown indents 4-space content into <pre>), and hljs's
+        // auto-detection turns them into unreadable color sludge.
+        if (!/\blanguage-\w+/.test(el.className || "")) return;
         try { window.hljs.highlightElement(el); } catch (_) {}
       });
     }, { timeout: 800 });
@@ -1337,7 +1404,10 @@ document.addEventListener("click", async (ev) => {
       try { slot.innerHTML = window.marked.parse(full, { mangle: false, headerIds: false }); }
       catch (_) { slot.textContent = full; }
       requestIdleCallback(() => {
-        slot.querySelectorAll("pre code").forEach((el) => { try { window.hljs && window.hljs.highlightElement(el); } catch (_) {} });
+        slot.querySelectorAll("pre code").forEach((el) => {
+          if (!/\blanguage-\w+/.test(el.className || "")) return;
+          try { window.hljs && window.hljs.highlightElement(el); } catch (_) {}
+        });
       }, { timeout: 800 });
     } else {
       const pre = slot.querySelector("pre");

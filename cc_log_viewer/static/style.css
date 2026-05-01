@@ -110,6 +110,34 @@ body {
   font-size: 11px;
   white-space: nowrap;
 }
+.date-scope-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 11px;
+  background: rgba(214, 176, 106, 0.14);
+  border: 1px solid rgba(214, 176, 106, 0.4);
+  color: #d6b06a;
+  font-family: ui-monospace, monospace;
+  margin-left: 4px;
+  white-space: nowrap;
+}
+.date-scope-clear {
+  background: transparent;
+  color: #d6b06a;
+  border: 0;
+  padding: 0 4px;
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: 8px;
+  line-height: 1;
+}
+.date-scope-clear:hover {
+  background: rgba(214, 176, 106, 0.25);
+  color: var(--text);
+}
 .tz-label {
   color: var(--text-muted);
   font-size: 11px;
@@ -829,22 +857,25 @@ body {
 .block-text { color: var(--text); }
 .block-text p { margin: 0 0 9px; }
 .block-text pre {
-  background: var(--bg);
-  padding: 10px 12px;
-  border-radius: 4px;
+  background: #1a1e2c;
+  color: #cdd5e0;                  /* readable default for prose stuck in <pre> */
+  padding: 10px 14px;
+  border-radius: 5px;
   overflow-x: auto;
   margin: 8px 0;
   font-size: 12px;
-  border: 1px solid var(--border);
+  line-height: 1.55;
+  border: 1px solid var(--border-strong);
 }
 .block-text code {
   background: var(--bg-elev);
-  padding: 1px 5px;
+  padding: 1px 6px;
   border-radius: 3px;
   font-size: 11.5px;
   font-family: ui-monospace, monospace;
+  color: #e3eaf6;
 }
-.block-text pre code { background: transparent; padding: 0; border: none; }
+.block-text pre code { background: transparent; padding: 0; border: none; color: inherit; }
 .block-text ul, .block-text ol { margin: 6px 0; padding-left: 24px; }
 .block-text h1, .block-text h2, .block-text h3, .block-text h4 {
   margin: 14px 0 6px;
@@ -1009,13 +1040,33 @@ body {
 
 /* ============================================================
    Scrollbars (chromium)
+   The timeline scrollbar gets its own larger/grabbier style because at
+   100k+-entry sessions the proportional thumb can shrink to a few pixels
+   tall, becoming unclickable. min-height keeps it usable.
    ============================================================ */
-.scroll::-webkit-scrollbar, .timeline-scroll::-webkit-scrollbar { width: 10px; height: 10px; }
-.scroll::-webkit-scrollbar-track, .timeline-scroll::-webkit-scrollbar-track { background: var(--bg); }
-.scroll::-webkit-scrollbar-thumb, .timeline-scroll::-webkit-scrollbar-thumb {
-  background: var(--bg-elev); border-radius: 5px;
+.scroll::-webkit-scrollbar { width: 10px; height: 10px; }
+.scroll::-webkit-scrollbar-track { background: var(--bg); }
+.scroll::-webkit-scrollbar-thumb { background: var(--bg-elev); border-radius: 5px; }
+.scroll::-webkit-scrollbar-thumb:hover { background: var(--accent-dim); }
+
+.timeline-scroll::-webkit-scrollbar { width: 16px; height: 16px; }
+.timeline-scroll::-webkit-scrollbar-track {
+  background: var(--bg-soft);
+  border-left: 1px solid var(--border);
 }
-.scroll::-webkit-scrollbar-thumb:hover, .timeline-scroll::-webkit-scrollbar-thumb:hover { background: var(--accent-dim); }
+.timeline-scroll::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid var(--bg-soft);   /* gives the thumb visual padding */
+  border-radius: 8px;
+  min-height: 48px;                   /* always grabbable, even on huge sessions */
+}
+.timeline-scroll::-webkit-scrollbar-thumb:hover { background: var(--accent-dim); }
+.timeline-scroll::-webkit-scrollbar-thumb:active { background: var(--accent); }
+/* Firefox */
+.timeline-scroll {
+  scrollbar-width: auto;
+  scrollbar-color: var(--border-strong) var(--bg-soft);
+}
 
 /* ============================================================
    Responsive
