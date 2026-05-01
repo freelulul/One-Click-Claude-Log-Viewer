@@ -37,17 +37,31 @@ This is a from-scratch rewrite addressing every one of those.
   (76 px per primary card, 32 px per collapsed span, 28 px per inner row
   when a span is expanded, 30 px for compaction markers). Only ~80 rows
   live in the DOM at any time. Toggling a span preserves scroll anchor
-  so the scrollbar thumb does not jump.
+  so the scrollbar thumb does not jump. The timeline scrollbar is
+  16 px wide with a 48 px-minimum thumb so 100k-entry sessions still
+  leave a thumb you can click and drag.
 - **Default-collapsed detail.** Click a card → a wide drawer slides in
   from the right (`clamp(520px, 60vw, 1100px)`) with the full content.
-  Markdown-rendered, code-highlighted, single scroll surface (no nested
-  scrollbars). Long content shows `Show full (N chars)` on demand.
-  External tool-result blobs (`tool-results/<hash>.txt`) load via a
-  button.
-- **Date-first navigation.** `Project → Date → Session`. Sessions that
-  span multiple days appear under each date with a `Day N/M` chip.
-  Clicking a session jumps the timeline to that date's *latest* message
-  by default (use `j`/`k` to step backwards through earlier turns).
+  Markdown-rendered, dark-themed code highlighting (atom-one-dark),
+  single scroll surface (no nested scrollbars). Long content shows
+  `Show full (N chars)` on demand. External tool-result blobs
+  (`tool-results/<hash>.txt`) load via a button. hljs only highlights
+  blocks that markdown tagged with an explicit language; untagged
+  prose-in-pre stays neutral (no random navy syntax noise).
+- **Date-first navigation + per-day scope.** `Project → Date → Session`.
+  Sessions that span multiple days appear under each date with a
+  `Day N/M` chip. Clicking a session under date `2026-04-30` *scopes*
+  the timeline to ONLY that date's entries by default — a multi-day
+  session with 100k+ entries collapses to today's few-hundred-turn
+  slice and the scrollbar represents that slice, not the whole history.
+  Topbar shows a `📅 2026-04-30 · N` chip with × to clear scope and
+  fall back to the full session view. The timeline lands on that
+  date's most recent message; `j`/`k` walks back through earlier turns
+  on the same date.
+- **Project picker auto-curated.** Empty / stub project directories
+  (no `.jsonl` sessions) are filtered out. Remaining projects are
+  sorted by latest-session-modified-time, descending — what you're
+  actively working in always lands on top.
 - **Stable session colors.** Each session gets a hue from a 24-color
   palette (deterministic from sessionId, deduplicated within a project)
   so a long-running session is recognizable across every date it
@@ -129,7 +143,7 @@ Run that command from your laptop. Open the local URL. Done.
 
 ```
 ┌──── topbar ──────────────────────────────────────────────────┐
-│ ☰  cc-log-viewer  ●session-label Day7/30 12k entries         │
+│ ☰ cc-log-viewer ●session 12k total 📅 2026-04-30 · 234 [×]   │
 │ [u] [a] [t] [r] [T] [/cmd] [c] [m] [o]   ↻ tz: <tz>  ?       │
 ├──────────────────────────────────────────────────────────────┤
 │  ●●  USER · 09:11:37        ← emerald, your real prompt      │
@@ -159,9 +173,13 @@ Run that command from your laptop. Open the local URL. Done.
   the full content (markdown rendered, code highlighted).
 - **Click a span bar** (▶) → expands inline, showing each tool / result
   / thinking / cmd entry as a small row. Click any row → opens its
-  detail too.
+  detail too. Toggling a span preserves your scroll anchor.
 - **Click ☰** → opens the project + date + session picker as a left
-  drawer.
+  drawer. Empty projects are filtered, remaining are sorted newest
+  modified first.
+- **`📅 YYYY-MM-DD · N` chip** in the topbar shows the active date
+  scope and the entry count on that date. Click `×` to clear scope
+  and see the full session.
 - **Filter chips** in the topbar toggle visibility of each entry class:
   `u` user, `a` assistant text, `t` tools, `r` tool results, `T`
   thinking, `/cmd` slash command + system injects, `c` compactions,
