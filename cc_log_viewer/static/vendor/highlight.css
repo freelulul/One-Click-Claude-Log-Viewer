@@ -7,7 +7,9 @@
   remains readable instead of dissolving into navy-on-navy mush. Background
   matches our --bg-card token; text matches --text-dim.
 */
-pre code.hljs { display: block; overflow-x: auto; padding: 12px 14px; }
+/* The outer .block-text pre already provides padding; pre > code.hljs would
+   otherwise double-pad. Bare code.hljs (inline) keeps minimal padding. */
+pre code.hljs { display: block; overflow-x: auto; padding: 0; }
 code.hljs     { padding: 2px 6px; }
 
 .hljs {
